@@ -1,0 +1,122 @@
+
+-- PostgreSQL: Generate CREATE TABLE statements with PK, UNIQUE, INDEX, and FK constraints
+
+WITH base AS (
+  SELECT
+    table_name,
+    column_name,
+    data_type,
+    CASE WHEN is_nullable THEN 'NULL' ELSE 'NOT NULL' END AS nullability,
+    is_primary_key,
+    is_unique,
+    index_name,
+    foreign_key_table,
+    foreign_key_column
+  FROM imported_table
+),
+
+column_defs AS (
+  SELECT
+    table_name,
+    STRING_AGG(
+      format('%I %s %s',
+        column_name,
+        data_type,
+        (CASE WHEN nullability = 'NOT NULL' THEN 'NOT NULL' ELSE '' END)
+      ),
+      ', '
+      ORDER BY column_name
+    ) AS col_def
+  FROM base
+  GROUP BY table_name
+),
+
+pk_defs AS (
+  SELECT
+    table_name,
+    format('CONSTRAINT %I_pkey PRIMARY KEY (%s)',
+           table_name,
+           STRING_AGG(format('%I', column_name), ', ' ORDER BY column_name)
+    ) AS pk_def
+  FROM base
+  WHERE is_primary_key
+  GROUP BY table_name
+),
+
+unique_defs AS (
+  SELECT
+    table_name,
+    STRING_AGG(
+      format('CONSTRAINT %I_%s_unique UNIQUE (%s)',
+             table_name,
+             replace(coalesce(index_name, column_name), ' ', '_'),
+             STRING_AGG(format('%I', column_name), ', ' ORDER BY column_name)
+      ),
+      ', '
+    ) AS unique_def
+  FROM (
+    SELECT table_name, COALESCE(index_name, column_name) AS grp, column_name
+    FROM base
+    WHERE is_unique
+  ) u
+  GROUP BY table_name
+),
+
+fk_defs AS (
+  SELECT
+    table_name,
+    STRING_AGG(
+      format(
+        'CONSTRAINT %I_%I_fk FOREIGN KEY (%I) REFERENCES %I(%I)',
+        table_name,
+        column_name,
+        column_name,
+        foreign_key_table,
+        foreign_key_column
+      ),
+      ', '
+      ORDER BY column_name
+    ) AS fk_def
+  FROM base
+  WHERE foreign_key_table IS NOT NULL AND foreign_key_column IS NOT NULL
+  GROUP BY table_name
+),
+
+index_defs AS (
+  -- Non-unique indexes only; unique ones are emitted as constraints above.
+  SELECT
+    table_name,
+    STRING_AGG(
+      format('CREATE INDEX %I ON %I (%s);',
+             replace(index_name, ' ', '_'),
+             table_name,
+             STRING_AGG(format('%I', column_name), ', ' ORDER BY column_name)
+      ),
+      E'\n'
+    ) AS idx_sql
+  FROM (
+    SELECT table_name, index_name, column_name
+    FROM base
+    WHERE index_name IS NOT NULL AND NOT is_unique
+  ) x
+  GROUP BY table_name
+)
+
+SELECT
+  table_name,
+  format(
+    'CREATE TABLE %I (%s%s%s%s);',
+    c.table_name,
+    c.col_def,
+    CASE WHEN p.pk_def IS NOT NULL THEN ', ' || p.pk_def ELSE '' END,
+    CASE WHEN u.unique_def IS NOT NULL THEN ', ' || u.unique_def ELSE '' END,
+    CASE WHEN f.fk_def IS NOT NULL THEN ', ' || f.fk_def ELSE '' END
+  ) AS create_table_sql,
+  COALESCE(i.idx_sql, '') AS index_sql
+FROM column_defs c
+LEFT JOIN pk_defs p USING (table_name)
+LEFT JOIN unique_defs u USING (table_name)
+LEFT JOIN fk_defs f USING (table_name)
+LEFT JOIN index_defs i USING (table_name)
+ORDER BY table_name;
+``

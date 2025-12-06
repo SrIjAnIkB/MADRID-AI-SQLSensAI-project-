@@ -1,0 +1,202 @@
+Add a functionality named " Static optimizer " and "AI optimizer" as seperate buttons in the SQL optimizer tool , where some SQL query optimization logic backend as static optimization logic like security risks validation generating issues which can be found by validating using general sql rules and fundamentals
+
+Optimization rules using general SQL fundamentals
+ 
+Below are practical rules you can implement as static checks.
+ 
+3.1 Avoid SELECT *
+ 
+Logic:
+If the select list contains * or table.* → create an issue.
+ 
+Why: Pulls unnecessary columns, higher I/O, harder to maintain.
+ 
+ 
+3.2 Missing WHERE on large tables (possible full table scan)
+ 
+Logic (static heuristic):
+ 
+If query is SELECT from a table and no WHERE clause.
+ 
+Optionally check against metadata: if table is known “large” (if you integrate with DB later).
+ 
+ 
+Issue: "Query runs without a WHERE clause and may scan the entire table."
+ 
+ 
+3.3 Non-SARGable conditions (functions on columns)
+ 
+> SARGable = can use index. Non-sargable = prevents index usage.
+ 
+ 
+ 
+Logic: look for patterns:
+ 
+WHERE LOWER(column) = 'value'
+ 
+WHERE DATE(column) = '2025-01-01'
+ 
+WHERE column + 1 = 10, etc.
+ 
+ 
+Rule: If a function/operator is applied on the column in the WHERE or JOIN condition → warn.
+ 
+Suggestion: Rewrite to put function on the literal, or precompute column, e.g.:
+ 
+WHERE column = UPPER('value')
+ 
+WHERE column >= '2025-01-01' AND column < '2025-01-02'
+ 
+ 
+ 
+3.4 Leading wildcard in LIKE
+ 
+Logic: Detect LIKE '%something' or LIKE '%something%'.
+ 
+Issue: "Leading wildcard LIKE pattern prevents index usage."
+ 
+Suggestion: "Use search-optimized column (e.g., full-text index) or avoid leading '%'."
+ 
+ 
+3.5 Overuse of DISTINCT
+ 
+Logic: If query uses SELECT DISTINCT and:
+ 
+There is no obvious aggregation, or
+ 
+The same columns appear in GROUP BY and SELECT.
+ 
+ 
+Issue: "DISTINCT may be hiding duplicate-generating joins. Check join conditions or remove if not needed."
+ 
+ 
+3.6 IN with large lists
+ 
+Logic: detect WHERE column IN (v1, v2, ..., vn) where n > threshold (e.g. 20).
+ 
+Issue: "Large IN lists can lead to slow query plans."
+ 
+Suggestion: "Store values in a temp table or join against a table instead of a long IN list."
+ 
+ 
+3.7 OR across same column instead of IN
+ 
+Logic: find patterns like col = v1 OR col = v2 OR col = v3.
+ 
+Suggestion: "Rewrite as col IN (v1, v2, v3) for cleaner and possibly better plans."
+ 
+ 
+3.8 Unused columns in SELECT vs GROUP BY / ORDER BY
+ 
+Logic:
+ 
+If column is selected but never used in WHERE, GROUP BY, ORDER BY, or later (this is tricky statically, but you can at least catch obvious duplicates).
+ 
+ 
+Issue: "Query selects columns that might not be needed. Reducing columns can improve performance."
+ 
+ 
+3.9 ORDER BY without LIMIT (on large sets)
+ 
+Logic:
+ 
+If query has ORDER BY but no LIMIT / TOP / FETCH.
+ 
+ 
+Issue: "Sorting full result set can be expensive. Use LIMIT/TOP/FETCH if you only need first N rows."
+ 
+ 
+3.10 Nested subqueries where JOIN may be better
+ 
+Logic:
+ 
+Detect WHERE col IN (SELECT col2 FROM ...) when a join could be used.
+ 
+ 
+Suggestion: "Consider rewriting subquery as a JOIN for better readability and often better performance."
+ 
+ 
+ 
+---
+ 
+4. Security rules (static checks)
+ 
+These are heuristic checks on the raw SQL text (plus maybe context if you have it).
+ 
+4.1 Tautological conditions (typical SQL injection pattern)
+ 
+Pattern examples:
+ 
+WHERE 1=1
+ 
+WHERE 'a'='a'
+ 
+OR 1=1
+ 
+ 
+Logic: Regex match on \b1\s*=\s*1\b or '[a-zA-Z]+'\s*=\s*'\1' inside WHERE or after OR.
+ 
+Issue: "Query contains a tautological condition (1=1) often used in injection attacks."
+ 
+ 
+4.2 Multiple statements in one string (stacked queries)
+ 
+Logic:
+ 
+Find ; inside the query (excluding the trailing one).
+ 
+OR detect patterns like DROP, ALTER, INSERT, UPDATE, DELETE after a SELECT in one string.
+ 
+ 
+Issue: "Multiple SQL statements found in a single query string. This is a common SQL injection vector."
+ 
+Suggestion: "Execute only one statement per call and always use parameterized queries."
+ 
+ 
+4.3 Suspicious comment usage in WHERE clauses
+ 
+Pattern: -- or /* after conditions, e.g.
+WHERE username = 'abc' --' AND password = 'xyz'
+ 
+Issue: "Inline comments in the middle of predicates may indicate tampering or injection attempts."
+ 
+ 
+4.4 Direct concatenation markers / placeholders
+ 
+If your optimizer sees more than pure SQL (e.g., code snippets), you can do more; but even on raw SQL:
+ 
+Logic:
+ 
+Detect ${...}, #{}
+ 
+Detect '|| (string concat) used with parameters (${userInput} etc.)
+ 
+Detect patterns like '+ or +" inside SQL (if you accept full text from code).
+ 
+ 
+ 
+If you only get pure SQL, you can still flag common “danger” strings like {{userInput}}, <%=, etc.
+ 
+Issue: "Query appears to be built using string concatenation. This is unsafe; use bound parameters instead."
+ 
+ 
+4.5 Dangerous statements in read-only context
+ 
+Logic:
+ 
+If user says query is “read-only” but SQL contains INSERT, UPDATE, DELETE, DROP, TRUNCATE.
+ 
+ 
+Issue: "Potentially destructive command detected (DROP/DELETE/UPDATE). Ensure this is intentional and access-controlled."
+ 
+ 
+4.6 Missing placeholders / parameters (if you know the target dialect)
+ 
+For an app that expects parameterized queries (e.g., SELECT * FROM users WHERE id = ?):
+ 
+Logic:
+ 
+If there is a string literal that looks like user data (email pattern, UUID, etc.) in WHERE clause and no parameter marker (?, :id, @id) anywhere → warn.
+ 
+ 
+Issue: "Hard-coded literal in WHERE clause. If this comes from user input, use parameters instead of string concatenation." 

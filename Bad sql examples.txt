@@ -1,0 +1,129 @@
+10 BAD SQL/SCHEMA EXAMPLES (missing indexes, redundant scans, bad joins, duplicate indexes)
+ 
+-- 1) Missing index on filter column -> full table scan on orders.customer_id
+--   Problem: customer_id is heavily used in WHERE but not indexed.
+SELECT
+    o.order_id,
+    o.order_date,
+    o.customer_id,
+    o.total_amount
+FROM orders o
+WHERE o.customer_id = 12345
+  AND o.order_date >= DATE '2025-01-01';
+ 
+ 
+-- 2) Missing composite index -> repeated table scans on (status, created_at)
+--   Problem: Only created_at is indexed, but queries always use (status, created_at).
+SELECT
+    u.user_id,
+    u.email,
+    u.status,
+    u.created_at
+FROM users u
+WHERE u.status = 'ACTIVE'
+  AND u.created_at >= NOW() - INTERVAL '7 days'
+ORDER BY u.created_at DESC;
+ 
+ 
+-- 3) Redundant table scans using correlated subquery instead of JOIN
+--   Problem: orders table scanned once for each customer row.
+SELECT
+    c.customer_id,
+    c.name,
+    (
+        SELECT COUNT(*)
+        FROM orders o
+        WHERE o.customer_id = c.customer_id
+          AND o.order_date >= CURRENT_DATE - INTERVAL '30 days'
+    ) AS recent_order_count
+FROM customers c
+WHERE c.status = 'ACTIVE';
+ 
+ 
+-- 4) Functions on indexed columns prevent index usage -> full scan
+--   Problem: wrapping order_date with DATE() disables index on order_date.
+SELECT
+    o.order_id,
+    o.order_date,
+    o.total_amount
+FROM orders o
+WHERE DATE(o.order_date) = DATE '2025-12-01';
+ 
+ 
+-- 5) Insufficient join condition -> accidental cartesian multiplication
+--   Problem: join is done only on department_id; should also match tenant_id.
+SELECT
+    e.employee_id,
+    e.name,
+    d.department_name
+FROM employees e
+JOIN departments d
+  ON e.department_id = d.department_id;
+-- In a multi-tenant schema, should be:
+-- ON e.department_id = d.department_id AND e.tenant_id = d.tenant_id;
+ 
+ 
+-- 6) CROSS JOIN used instead of proper join condition
+--   Problem: gigantic cartesian product then filtered in WHERE.
+SELECT
+    c.customer_id,
+    c.name,
+    o.order_id,
+    o.total_amount
+FROM customers c
+CROSS JOIN orders o
+WHERE c.customer_id = o.customer_id
+  AND o.order_date >= CURRENT_DATE - INTERVAL '7 days';
+-- Better:
+-- FROM customers c
+-- JOIN orders o ON c.customer_id = o.customer_id
+-- WHERE o.order_date >= CURRENT_DATE - INTERVAL '7 days';
+ 
+ 
+-- 7) Expression on join key -> index on join column cannot be used
+--   Problem: DATE() on timestamp prevents index-only join.
+SELECT
+    f.fact_date,
+    f.sales_amount,
+    d.date_key
+FROM fact_sales f
+JOIN dim_date d
+  ON DATE(f.created_at) = d.calendar_date;
+-- Better: store date_key or calendar_date explicitly, or join on same-type columns.
+ 
+ 
+-- 8) Redundant self-join -> extra scan with no benefit
+--   Problem: second reference to users table is unnecessary.
+SELECT
+    u1.user_id,
+    u1.email
+FROM users u1
+JOIN users u2
+  ON u1.user_id = u2.user_id
+WHERE u1.status = 'ACTIVE';
+-- Better:
+-- SELECT user_id, email FROM users WHERE status = 'ACTIVE';
+ 
+ 
+-- 9) Duplicate single-column indexes on the same column
+--   Problem: needless write overhead, no query benefit.
+--   (Schema example, not a query.)
+CREATE INDEX idx_orders_customer_id
+    ON orders(customer_id);
+ 
+CREATE INDEX idx_orders_customer_id_dup
+    ON orders(customer_id);  -- Duplicate of idx_orders_customer_id
+ 
+ 
+-- 10) Overlapping / redundant composite indexes
+--   Problem: multiple similar indexes, heavy overhead on INSERT/UPDATE.
+--   (Schema example, not a query.)
+CREATE INDEX idx_payments_user_created
+    ON payments(user_id, created_at);
+ 
+CREATE INDEX idx_payments_user_created_status
+    ON payments(user_id, created_at, status);
+ 
+-- Very often idx_payments_user_created is redundant because the
+-- leftmost-prefix rule lets the second index also satisfy queries
+-- that use only (user_id, created_at).

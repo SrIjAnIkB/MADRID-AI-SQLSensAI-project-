@@ -1,0 +1,180 @@
+Problem statement 1 : 
+
+Find each customer's most recent order. Return customer_id, customer_name, order_id, order_date, total_amount. Include customers with no orders (show NULLs for order fields).
+
+Approach 1 : CTEs to compute last order date and last order id, then left-join to customers
+
+Useful when you want a clear step-by-step aggregation and deterministic tie-breaker by order id.
+
+WITH latest_dates AS (
+  SELECT customer_id, MAX(order_date) AS last_order_date
+  FROM orders
+  GROUP BY customer_id
+),
+latest_order_ids AS (
+  SELECT o.customer_id, MAX(o.id) AS last_order_id
+  FROM orders o
+  JOIN latest_dates ld
+    ON o.customer_id = ld.customer_id
+   AND o.order_date = ld.last_order_date
+  GROUP BY o.customer_id
+)
+SELECT
+  c.id           AS customer_id,
+  c.name         AS customer_name,
+  o.id           AS order_id,
+  o.order_date,
+  o.total_amount
+FROM customers c
+LEFT JOIN latest_order_ids loi ON loi.customer_id = c.id
+LEFT JOIN orders o ON o.id = loi.last_order_id;
+
+
+
+Approach 2: correlated subqueries in SELECT to fetch latest order fields (simple, portable but can be less performant on large tables)
+
+Uses LIMIT 1 per customer to pick the latest order (tie-break by id).
+
+SELECT
+  c.id AS customer_id,
+  c.name AS customer_name,
+  (
+    SELECT o1.id
+    FROM orders o1
+    WHERE o1.customer_id = c.id
+    ORDER BY o1.order_date DESC, o1.id DESC
+    LIMIT 1
+  ) AS order_id,
+  (
+    SELECT o2.order_date
+    FROM orders o2
+    WHERE o2.customer_id = c.id
+    ORDER BY o2.order_date DESC, o2.id DESC
+    LIMIT 1
+  ) AS order_date,
+  (
+    SELECT o3.total_amount
+    FROM orders o3
+    WHERE o3.customer_id = c.id
+    ORDER BY o3.order_date DESC, o3.id DESC
+    LIMIT 1
+  ) AS total_amount
+FROM customers c;
+
+Approach 3 : window function (ROW_NUMBER) to pick the latest order per customer, then left-join to customers
+Efficient and recommended for large datasets when MySQL 8+ is available.
+
+WITH ranked_orders AS (
+  SELECT
+    o.*,
+    ROW_NUMBER() OVER (PARTITION BY o.customer_id ORDER BY o.order_date DESC, o.id DESC) AS rn
+  FROM orders o
+)
+SELECT
+  c.id           AS customer_id,
+  c.name         AS customer_name,
+  ro.id          AS order_id,
+  ro.order_date,
+  ro.total_amount
+FROM customers c
+LEFT JOIN (
+  SELECT * FROM ranked_orders WHERE rn = 1
+) ro ON ro.customer_id = c.id;
+
+
+
+
+problem statement 2:
+For each customer, return: customer_id, customer_name, region_name, total_spent (sum of their orders' total_amount, 0 if none), and rank_in_region (1 = highest spender in that region). Include customers with no orders.
+
+Approach 1: aggregation with window function (MySQL 8+). Recommended for clarity and performance.
+```mysql
+
+WITH cust_totals AS (
+  SELECT
+    c.id            AS customer_id,
+    c.name          AS customer_name,
+    c.region_id,
+    COALESCE(SUM(o.total_amount), 0) AS total_spent
+  FROM customers c
+  LEFT JOIN orders o ON o.customer_id = c.id
+  GROUP BY c.id, c.name, c.region_id
+)
+SELECT
+  ct.customer_id,
+  ct.customer_name,
+  r.name AS region_name,
+  ct.total_spent,
+  RANK() OVER (PARTITION BY ct.region_id ORDER BY ct.total_spent DESC) AS rank_in_region
+FROM cust_totals ct
+LEFT JOIN regions r ON r.id = ct.region_id
+ORDER BY r.name, rank_in_region;
+```
+
+Approach 2: correlated subqueries (portable to older MySQL versions). Simpler to reason about but may be slower on large data.
+```MySQL
+
+SELECT
+  c.id AS customer_id,
+  c.name AS customer_name,
+  r.name AS region_name,
+  COALESCE((
+    SELECT SUM(o.total_amount)
+    FROM orders o
+    WHERE o.customer_id = c.id
+  ), 0) AS total_spent,
+  (
+    SELECT 1 + COUNT(*)
+    FROM (
+      SELECT COALESCE(SUM(o2.total_amount),0) AS other_spent
+      FROM customers c2
+      LEFT JOIN orders o2 ON o2.customer_id = c2.id
+      WHERE c2.region_id = c.region_id
+      GROUP BY c2.id
+    ) t
+    WHERE t.other_spent > COALESCE((
+      SELECT SUM(o3.total_amount) FROM orders o3 WHERE o3.customer_id = c.id
+    ), 0)
+  ) AS rank_in_region
+FROM customers c
+LEFT JOIN regions r ON r.id = c.region_id
+ORDER BY region_name, rank_in_region;
+```
+
+Approach 3: derived aggregation + user-defined variables for ranking (works on pre-8.0 MySQL). Use caution: variables-based ranking relies on ordering and is procedural-style.
+```MySQL
+
+
+SELECT
+  customer_id,
+  customer_name,
+  region_name,
+  total_spent,
+  rank_in_region
+FROM (
+  SELECT
+    ct.customer_id,
+    ct.customer_name,
+    r.name AS region_name,
+    ct.total_spent,
+    @rank := IF(@current_region = ct.region_id, @rank + 1, 1) AS rank_in_region,
+    @current_region := ct.region_id
+  FROM (
+    SELECT
+      c.id AS customer_id,
+      c.name AS customer_name,
+      c.region_id,
+      COALESCE(SUM(o.total_amount), 0) AS total_spent
+    FROM customers c
+    LEFT JOIN orders o ON o.customer_id = c.id
+    GROUP BY c.id, c.name, c.region_id
+  ) ct
+  LEFT JOIN regions r ON r.id = ct.region_id
+  CROSS JOIN (SELECT @rank := 0, @current_region := NULL) vars
+  ORDER BY ct.region_id, ct.total_spent DESC
+) s;
+
+
+
+
+

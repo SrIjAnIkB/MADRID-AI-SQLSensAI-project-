@@ -1,0 +1,95 @@
+Problem Statement 1: Find employees and their department names
+ 
+Tables:
+Employees(emp_id, emp_name, dept_id)
+Departments(dept_id, dept_name)
+ 
+ 
+---
+ 
+Approach 1: INNER JOIN
+ 
+SELECT e.emp_name, d.dept_name
+FROM Employees e
+INNER JOIN Departments d
+      ON e.dept_id = d.dept_id;
+ 
+Approach 2: LEFT JOIN (shows employees without a department too)
+ 
+SELECT e.emp_name, d.dept_name
+FROM Employees e
+LEFT JOIN Departments d
+       ON e.dept_id = d.dept_id;
+ 
+Approach 3: Subquery instead of JOIN
+ 
+SELECT emp_name,
+       (SELECT dept_name
+        FROM Departments d
+        WHERE d.dept_id = e.dept_id) AS dept_name
+FROM Employees e;
+ 
+ 
+---
+ 
+✅ Problem Statement 2: List all orders with customer names
+ 
+Tables:
+Orders(order_id, customer_id, amount)
+Customers(customer_id, customer_name)
+ 
+ 
+---
+ 
+Approach 1: INNER JOIN
+ 
+SELECT c.customer_name, o.order_id, o.amount
+FROM Customers c
+INNER JOIN Orders o
+      ON c.customer_id = o.customer_id;
+ 
+Approach 2: RIGHT JOIN (less common, same result reversed)
+ 
+SELECT c.customer_name, o.order_id, o.amount
+FROM Customers c
+RIGHT JOIN Orders o
+       ON c.customer_id = o.customer_id;
+ 
+Approach 3: USING clause (when column names match)
+ 
+SELECT customer_name, order_id, amount
+FROM Customers
+JOIN Orders
+USING (customer_id);
+ 
+ 
+---
+ 
+✅ Problem Statement 3: Get products and their category names
+ 
+Tables:
+Products(product_id, product_name, category_id)
+Categories(category_id, category_name)
+ 
+ 
+---
+ 
+Approach 1: LEFT JOIN
+ 
+SELECT p.product_name, c.category_name
+FROM Products p
+LEFT JOIN Categories c
+       ON p.category_id = c.category_id;
+ 
+Approach 2: INNER JOIN
+ 
+SELECT p.product_name, c.category_name
+FROM Products p
+JOIN Categories c
+     ON p.category_id = c.category_id;
+ 
+Approach 3: JOIN with WHERE instead of ON (older style)
+ 
+SELECT p.product_name, c.category_name
+FROM Products p, Categories c
+WHERE p.category_id = c.category_id;
